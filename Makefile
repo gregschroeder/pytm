@@ -1,6 +1,7 @@
 MKFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 CWD := $(patsubst %/,%,$(dir $(MKFILE_PATH)))
 DOCKER_IMG := pytm
+SHELL := /bin/bash
 
 ifeq ($(USE_DOCKER),true)
 	SHELL=docker
@@ -12,8 +13,9 @@ endif
 
 models := tm.py
 libs := $(wildcard pytm/*.py) $(wildcard pytm/threatlib/*.json) $(wildcard pytm/images/*)
+
+build: docs/pytm/index.html reports
 all: clean build
-all: $(models:.py=/report.html) $(models:.py=/dfd.png) $(models:.py=/seq.png) docs/pytm/index.html
 
 docs/pytm/index.html: $(wildcard pytm/*.py)
 	PYTHONPATH=. pdoc --html --force --output-dir docs pytm
@@ -23,25 +25,40 @@ docs/threats.md: $(wildcard pytm/threatlib/*.json)
 	jq -r ".[] | \"$$(cat docs/threats.jq)\"" $< >> $@
 
 clean:
-	rm -rf dist/* build/* $(models:.py=/*)
+	rm -rf dist/* build/* $(models:.py=/)
 
-tm:
-	mkdir -p tm
+$(models:.py=):
+	[ -d "$@" ] || mkdir -p $@
+	ln -s ../docs $@
 
-%/dfd.png: %.py tm $(libs)
+%/dfd.png: %.py $(libs) | %
 	./$< --dfd | dot -Tpng -o $@
 
-%/seq.png: %.py tm $(libs)
-	./$< --seq | java -Djava.awt.headless=true -jar $$PLANTUML_PATH -tpng -pipe > $@
+%/seq.png: %.py $(libs) | %
+	./$< --seq | java -Djava.awt.headless=true -jar $$PLANTUML_PATH -tpng -pipe 2> >(grep -v 'CoreText note:') > $@
 
-%/report.html: %.py tm $(libs) docs/template.md docs/Stylesheet.css
+%/report.html: %.py $(libs) docs/template.md %/dfd.png %/seq.png docs/Stylesheet.css | %
 	./$< --report docs/template.md | pandoc -f markdown -t html > $@
+
+%/report.pdf: %/report.html
+	echo '<meta http-equiv="Content-type" content="text/html; charset=utf-8" /><meta charset="UTF-8" />' > $<.tmp.html
+	sed \
+	  -e 's/\<details\>/<details open>/' \
+	  -e 's/<\([Ii][Mm][Gg] [Ss][Rr][Cc]=javascript[^>]*\)>/<pre>\1<\/pre>/' \
+	  $< >> $<.tmp.html
+	wkhtmltopdf --quiet --enable-local-file-access -n $<.tmp.html $@ && rm -f $<.tmp.html
+
 
 dfd: $(models:.py=/dfd.png)
 
 seq: $(models:.py=/seq.png)
 
-report: $(models:.py=/report.html) seq dfd
+html: $(models:.py=/report.html)
+
+pdf: $(models:.py=/report.pdf)
+
+reports: dfd seq html pdf
+
 
 .PHONY: test
 test:
@@ -49,7 +66,7 @@ test:
 
 .PHONY: describe
 describe:
-	./tm.py --describe "TM Element Boundary ExternalEntity Actor Lambda Server Process SetOfProcesses Datastore Dataflow"
+	./$(word 1,$(models)) --describe "TM Element Boundary ExternalEntity Actor Lambda Server Process SetOfProcesses Datastore Dataflow"
 
 .PHONY: image
 image:
